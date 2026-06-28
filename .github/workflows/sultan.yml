@@ -81,7 +81,7 @@ jobs:
           cd "$CONFIG"
 
           echo "Adding KernelSU..."
-          curl -LSs "https://raw.githubusercontent.com/KernelSU-Next/KernelSU-Next/dev/kernel/setup.sh" | bash -s 293ca016cf7196c2e96403a929ea3f464fd3568b
+          curl -LSs "https://raw.githubusercontent.com/KernelSU-Next/KernelSU-Next/dev/kernel/setup.sh" | bash -s 0daf55582
 
       - name: Apply SUSFS Patches
         if: contains(matrix.features, 'susfs')
@@ -109,8 +109,8 @@ jobs:
           patch -p1 < sys.c_fix.patch
 
           cd KernelSU-Next
-          cp ${{ github.workspace }}/kernel_patches/wild/ksun-293ca01-susfs-v2.1.0-a14-6.1-ef16cbce.patch ./
-          patch -p1 < ksun-293ca01-susfs-v2.1.0-a14-6.1-ef16cbce.patch
+          cp ${{ github.workspace }}/kernel_patches/wild/ksun-0daf55582-susfs-v2.1.0-e259e7d6.patch ./
+          patch -p1 < ksun-0daf55582-susfs-v2.1.0-e259e7d6.patch
 
           # --- EKLENECEK KISIM BAŞLANGICI ---
           cd .. # KernelSU klasöründen çıkıp Kernel ana dizinine (android_kernel_google_tensynos) dönüyoruz
