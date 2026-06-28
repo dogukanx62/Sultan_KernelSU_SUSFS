@@ -81,7 +81,7 @@ jobs:
           cd "$CONFIG"
 
           echo "Adding KernelSU..."
-          curl -LSs "https://raw.githubusercontent.com/KernelSU-Next/KernelSU-Next/dev/kernel/setup.sh" | bash -s 0daf55582
+          curl -LSs "https://raw.githubusercontent.com/KernelSU-Next/KernelSU-Next/dev/kernel/setup.sh" | bash -s 293ca016cf7196c2e96403a929ea3f464fd3568b
 
       - name: Apply SUSFS Patches
         if: contains(matrix.features, 'susfs')
@@ -109,14 +109,12 @@ jobs:
           patch -p1 < sys.c_fix.patch
 
           cd KernelSU-Next
-          cp ${{ github.workspace }}/kernel_patches/wild/ksun-0daf55582-susfs-v2.1.0-e259e7d6.patch ./
-          patch -p1 < ksun-0daf55582-susfs-v2.1.0-e259e7d6.patch
+          cp ${{ github.workspace }}/kernel_patches/wild/ksun-5a4a718-susfs-f7ae19ef-gki-android14-6.1.patch ./
+          patch -p1 < ksun-5a4a718-susfs-f7ae19ef-gki-android14-6.1.patch
 
-          # --- EKLENECEK KISIM BAŞLANGICI ---
           cd .. # KernelSU klasöründen çıkıp Kernel ana dizinine (android_kernel_google_tensynos) dönüyoruz
           echo "Applying ZeroMount patch..."
-          patch -p1 < ${{ github.workspace }}/.github/zeromount.patch
-          # --- EKLENECEK KISIM BİTİŞİ ---
+          patch -p1 < ${{ github.workspace }}/.github/patches/zeromount.patch
 
       - name: Configure KernelSU
         if: contains(matrix.features, 'wksu')
@@ -127,6 +125,7 @@ jobs:
           echo "CONFIG_KSU=y" >> ./arch/arm64/configs/${{ inputs.codename }}_defconfig
           if [[ "${{ matrix.features }}" == *"susfs"* ]]; then
             echo "CONFIG_KSU_SUSFS=y" >> ./arch/arm64/configs/${{ inputs.codename }}_defconfig
+            # --- ZEROMOUNT İÇİN EKLENEN KISIM ---
             echo "CONFIG_ZEROMOUNT=y" >> ./arch/arm64/configs/${{ inputs.codename }}_defconfig
           else
             echo "CONFIG_KSU_MANUAL_HOOKS=y" >> ./arch/arm64/configs/${{ inputs.codename }}_defconfig
