@@ -87,6 +87,31 @@ jobs:
       - name: Replace only the generation-coupled GPU components
         run: |
           set -Eeuo pipefail
+
+          # Sultan builds the Google GPU modules in-tree through custom
+          # KBUILD_OPTIONS plumbing. Lineage builds the same DDK out-of-tree,
+          # so replacing its Makefiles verbatim silently produces an empty
+          # mali_kbase built-in archive. Preserve only Sultan's integration
+          # glue and its already-proven SSCD/Gator bloat removals; all actual
+          # r54p1 driver/UAPI/platform code still comes from the pinned
+          # Lineage commit.
+          glue="$RUNNER_TEMP/sultan-gpu-integration-glue"
+          mkdir -p \
+            "$glue/mali_kbase/platform/pixel" \
+            "$glue/mali_pixel"
+          cp -a work/kernel/google-modules/gpu/mali_kbase/Kbuild \
+            "$glue/mali_kbase/Kbuild"
+          cp -a work/kernel/google-modules/gpu/mali_kbase/Makefile \
+            "$glue/mali_kbase/Makefile"
+          cp -a work/kernel/google-modules/gpu/mali_kbase/platform/pixel/Kbuild \
+            "$glue/mali_kbase/platform/pixel/Kbuild"
+          cp -a work/kernel/google-modules/gpu/mali_kbase/platform/pixel/pixel_gpu_debug.h \
+            "$glue/mali_kbase/platform/pixel/pixel_gpu_debug.h"
+          cp -a work/kernel/google-modules/gpu/mali_pixel/Kbuild \
+            "$glue/mali_pixel/Kbuild"
+          cp -a work/kernel/google-modules/gpu/mali_pixel/Makefile \
+            "$glue/mali_pixel/Makefile"
+
           for component in common mali_kbase mali_pixel; do
             rm -rf "work/kernel/google-modules/gpu/$component"
             cp -a "work/gpu-compat/gpu/$component" \
@@ -95,6 +120,24 @@ jobs:
               "work/kernel/google-modules/gpu/$component"
           done
 
+          install -m 0644 "$glue/mali_kbase/Kbuild" \
+            work/kernel/google-modules/gpu/mali_kbase/Kbuild
+          install -m 0644 "$glue/mali_kbase/Makefile" \
+            work/kernel/google-modules/gpu/mali_kbase/Makefile
+          install -m 0644 "$glue/mali_kbase/platform/pixel/Kbuild" \
+            work/kernel/google-modules/gpu/mali_kbase/platform/pixel/Kbuild
+          install -m 0644 "$glue/mali_kbase/platform/pixel/pixel_gpu_debug.h" \
+            work/kernel/google-modules/gpu/mali_kbase/platform/pixel/pixel_gpu_debug.h
+          install -m 0644 "$glue/mali_pixel/Kbuild" \
+            work/kernel/google-modules/gpu/mali_pixel/Kbuild
+          install -m 0644 "$glue/mali_pixel/Makefile" \
+            work/kernel/google-modules/gpu/mali_pixel/Makefile
+
+          # The release label belongs to the DDK generation, not to Sultan's
+          # integration glue. Keep it aligned with the r54p1 source payload.
+          sed -i 's/r54p2-00eac0/r54p1-11eac0/' \
+            work/kernel/google-modules/gpu/mali_kbase/Kbuild
+
           # Guard against a dangerous firmware-name-only substitution. The
           # complete r54p1 driver and its matching UAPI/platform pieces must be present.
           test "$(find work/kernel/google-modules/gpu/mali_kbase -type f | wc -l)" -eq 416
@@ -102,6 +145,17 @@ jobs:
             work/kernel/google-modules/gpu/mali_kbase/Kbuild
           grep -Fq "release_fw_name[] = \"$GPU_FIRMWARE\";" \
             work/kernel/google-modules/gpu/mali_kbase/csf/mali_kbase_csf_firmware.c
+          grep -Fq 'KBUILD_OPTIONS += $(MAKE_ARGS)' \
+            work/kernel/google-modules/gpu/mali_kbase/Makefile
+          grep -Fq 'CONFIG_MALI_GATOR_SUPPORT ?= n' \
+            work/kernel/google-modules/gpu/mali_kbase/Makefile
+          grep -Fq 'include $(ROOT_DIR)/private/google-modules/soc/gs/Makefile.include' \
+            work/kernel/google-modules/gpu/mali_pixel/Makefile
+          if grep -Fq 'ccflags-y += -DCONFIG_MALI_PIXEL_GPU_SSCD' \
+            work/kernel/google-modules/gpu/mali_kbase/Kbuild; then
+            echo 'Sultan SSCD removal was not preserved' >&2
+            exit 1
+          fi
           if rg -n 'r54p2|mali_csffw-r54p2' \
             work/kernel/google-modules/gpu/mali_kbase; then
             echo 'Mixed r54p1/r54p2 Mali source detected' >&2
@@ -173,6 +227,11 @@ jobs:
             KSU_VERSION_TAG_OVERRIDE="$KSU_TAG" \
             -j"$(nproc)" Image.lz4 dtbs \
             2>&1 | tee "$GITHUB_WORKSPACE/work/build.log"
+
+          # A successful link is insufficient: without Sultan's KBUILD_OPTIONS
+          # bridge, mali_kbase/built-in.a is empty. Require a real CSF object.
+          grep -Fq 'google-modules/gpu/mali_kbase/csf/mali_kbase_csf_firmware.o' \
+            "$GITHUB_WORKSPACE/work/build.log"
 
       - name: Validate linked GPU generation and package payload
         working-directory: work/kernel
