@@ -1,0 +1,237 @@
+name: crDroid Sultan GPU r54p1 compatibility
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+    paths:
+      - .github/workflows/crdroid-gpu-r54p1-compat.yml
+      - .github/patches/crdroid/**
+
+permissions:
+  contents: read
+
+concurrency:
+  group: crdroid-sultan-gpu-r54p1-compat
+  cancel-in-progress: false
+
+env:
+  SULTAN_REPO: https://github.com/kerneltoast/android_kernel_google_tensynos.git
+  SULTAN_COMMIT: af5c65b9547a9f33c5f566430d0434aecab5a8b5
+  GPU_COMPAT_REPO: https://github.com/LineageOS/android_kernel_google_gs-6.1_google-modules.git
+  GPU_COMPAT_COMMIT: 5f45eed2e0b4c8bd4755e99b2ca902638be2b9fc
+  GPU_RELEASE: r54p1-11eac0
+  GPU_FIRMWARE: mali_csffw-r54p1.bin
+  KSU_REPO: https://github.com/KernelSU-Next/KernelSU-Next.git
+  KSU_COMMIT: 30802e7260e2387176b9301377e88fc6fb0356b7
+  KSU_VERSION: "33201"
+  KSU_TAG: v3.2.0
+  TOOLCHAIN_URL: https://developer.arm.com/-/media/Files/downloads/gnu/14.2.rel1/binrel/arm-gnu-toolchain-14.2.rel1-x86_64-aarch64-none-linux-gnu.tar.xz
+  TOOLCHAIN_SHA256: 47aeefc02b0ee39f6d4d1812110952975542d365872a7474b5306924bca4faa1
+
+jobs:
+  build:
+    name: KSU 33201 + SUSFS 2.2 + crDroid r54p1 GPU
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+
+    steps:
+      - name: Check out compatibility files
+        uses: actions/checkout@v4
+
+      - name: Install host dependencies
+        run: |
+          set -Eeuo pipefail
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends -y \
+            bc bison build-essential ca-certificates flex git libelf-dev \
+            libssl-dev lz4 python3 ripgrep xz-utils zip
+
+      - name: Install pinned Arm GNU toolchain
+        run: |
+          set -Eeuo pipefail
+          mkdir -p "$RUNNER_TEMP/arm-gnu-14.2"
+          curl --fail --location --proto '=https' --tlsv1.2 \
+            --retry 5 --retry-all-errors \
+            "$TOOLCHAIN_URL" -o "$RUNNER_TEMP/arm-gnu.tar.xz"
+          printf '%s  %s\n' "$TOOLCHAIN_SHA256" "$RUNNER_TEMP/arm-gnu.tar.xz" \
+            | sha256sum -c -
+          tar --no-same-owner -xJf "$RUNNER_TEMP/arm-gnu.tar.xz" \
+            -C "$RUNNER_TEMP/arm-gnu-14.2" --strip-components=1
+          "$RUNNER_TEMP/arm-gnu-14.2/bin/aarch64-none-linux-gnu-gcc" --version
+
+      - name: Fetch exact Sultan and crDroid GPU sources
+        run: |
+          set -Eeuo pipefail
+          mkdir -p work
+
+          git clone --filter=blob:none --no-checkout "$SULTAN_REPO" work/kernel
+          git -C work/kernel fetch --depth=1 origin "$SULTAN_COMMIT"
+          git -C work/kernel checkout --detach "$SULTAN_COMMIT"
+          test "$(git -C work/kernel rev-parse HEAD)" = "$SULTAN_COMMIT"
+
+          git clone --filter=blob:none --no-checkout "$GPU_COMPAT_REPO" work/gpu-compat
+          git -C work/gpu-compat fetch --depth=1 origin "$GPU_COMPAT_COMMIT"
+          git -C work/gpu-compat sparse-checkout init --cone
+          git -C work/gpu-compat sparse-checkout set \
+            gpu/common gpu/mali_kbase gpu/mali_pixel
+          git -C work/gpu-compat checkout --detach "$GPU_COMPAT_COMMIT"
+          test "$(git -C work/gpu-compat rev-parse HEAD)" = "$GPU_COMPAT_COMMIT"
+
+          grep -Fq "MALI_RELEASE_NAME ?= '\"$GPU_RELEASE\"'" \
+            work/gpu-compat/gpu/mali_kbase/Kbuild
+          grep -Fq "release_fw_name[] = \"$GPU_FIRMWARE\";" \
+            work/gpu-compat/gpu/mali_kbase/csf/mali_kbase_csf_firmware.c
+
+      - name: Replace only the generation-coupled GPU components
+        run: |
+          set -Eeuo pipefail
+          for component in common mali_kbase mali_pixel; do
+            rm -rf "work/kernel/google-modules/gpu/$component"
+            cp -a "work/gpu-compat/gpu/$component" \
+              "work/kernel/google-modules/gpu/$component"
+            diff -qr "work/gpu-compat/gpu/$component" \
+              "work/kernel/google-modules/gpu/$component"
+          done
+
+          # Guard against a dangerous firmware-name-only substitution. The
+          # complete r54p1 driver and its matching UAPI/platform pieces must be present.
+          test "$(find work/kernel/google-modules/gpu/mali_kbase -type f | wc -l)" -eq 416
+          grep -Fq "MALI_RELEASE_NAME ?= '\"$GPU_RELEASE\"'" \
+            work/kernel/google-modules/gpu/mali_kbase/Kbuild
+          grep -Fq "release_fw_name[] = \"$GPU_FIRMWARE\";" \
+            work/kernel/google-modules/gpu/mali_kbase/csf/mali_kbase_csf_firmware.c
+          if rg -n 'r54p2|mali_csffw-r54p2' \
+            work/kernel/google-modules/gpu/mali_kbase; then
+            echo 'Mixed r54p1/r54p2 Mali source detected' >&2
+            exit 1
+          fi
+
+      - name: Apply exact KSU Next and SUSFS baseline
+        run: |
+          set -Eeuo pipefail
+          git -C work/kernel apply --check \
+            "$GITHUB_WORKSPACE/.github/patches/crdroid/30_sultan-susfs-v2.2.0-zeromount.patch"
+          git -C work/kernel apply \
+            "$GITHUB_WORKSPACE/.github/patches/crdroid/30_sultan-susfs-v2.2.0-zeromount.patch"
+
+          # ZeroMount remains fully compiled out for this GPU-only compatibility test.
+          sed -i \
+            -e '/^CONFIG_ZEROMOUNT=/d' \
+            -e '/^# CONFIG_ZEROMOUNT is not set$/d' \
+            work/kernel/arch/arm64/configs/zumapro_defconfig
+
+          git clone --filter=blob:none --no-checkout \
+            "$KSU_REPO" work/kernel/KernelSU
+          git -C work/kernel/KernelSU fetch --depth=1 origin "$KSU_COMMIT"
+          git -C work/kernel/KernelSU checkout --detach "$KSU_COMMIT"
+          test "$(git -C work/kernel/KernelSU rev-parse HEAD)" = "$KSU_COMMIT"
+          git -C work/kernel/KernelSU apply --check \
+            "$GITHUB_WORKSPACE/.github/patches/crdroid/20_ksunext-susfs-v2.2.0-wild-33201.patch"
+          git -C work/kernel/KernelSU apply \
+            "$GITHUB_WORKSPACE/.github/patches/crdroid/20_ksunext-susfs-v2.2.0-wild-33201.patch"
+
+          ln -s ../KernelSU/kernel work/kernel/drivers/kernelsu
+          test -f work/kernel/drivers/kernelsu/Kconfig
+          git -C work/kernel diff --check
+          git -C work/kernel/KernelSU diff --check
+
+      - name: Configure and verify compatibility boundary
+        working-directory: work/kernel
+        env:
+          CROSS_COMPILE: ${{ runner.temp }}/arm-gnu-14.2/bin/aarch64-none-linux-gnu-
+        run: |
+          set -Eeuo pipefail
+          make O=out CROSS_COMPILE="$CROSS_COMPILE" \
+            KSU_VERSION_OVERRIDE="$KSU_VERSION" \
+            KSU_VERSION_TAG_OVERRIDE="$KSU_TAG" zumapro_defconfig
+
+          scripts/config --file out/.config --disable ZEROMOUNT
+          make O=out CROSS_COMPILE="$CROSS_COMPILE" olddefconfig
+
+          grep -qx 'CONFIG_KSU=y' out/.config
+          grep -qx 'CONFIG_KSU_SUSFS=y' out/.config
+          grep -qx '# CONFIG_ZEROMOUNT is not set' out/.config
+          grep -qx 'CONFIG_INTEGRATE_MODULES=y' out/.config
+          grep -qx 'CONFIG_LOCALVERSION="-Sultan"' out/.config
+          cp out/.config "$GITHUB_WORKSPACE/work/kernel.config"
+
+      - name: Build kernel and DTBs
+        working-directory: work/kernel
+        env:
+          CROSS_COMPILE: ${{ runner.temp }}/arm-gnu-14.2/bin/aarch64-none-linux-gnu-
+          KBUILD_BUILD_USER: crdroid-gpu-compat
+          KBUILD_BUILD_HOST: github-actions
+          KBUILD_BUILD_VERSION: "1"
+        run: |
+          set -Eeuo pipefail
+          export KBUILD_BUILD_TIMESTAMP
+          KBUILD_BUILD_TIMESTAMP=$(git show -s --format=%cD "$SULTAN_COMMIT")
+          make O=out CROSS_COMPILE="$CROSS_COMPILE" \
+            KSU_VERSION_OVERRIDE="$KSU_VERSION" \
+            KSU_VERSION_TAG_OVERRIDE="$KSU_TAG" \
+            -j"$(nproc)" Image.lz4 dtbs \
+            2>&1 | tee "$GITHUB_WORKSPACE/work/build.log"
+
+      - name: Validate linked GPU generation and package payload
+        working-directory: work/kernel
+        env:
+          CROSS_COMPILE: ${{ runner.temp }}/arm-gnu-14.2/bin/aarch64-none-linux-gnu-
+        run: |
+          set -Eeuo pipefail
+          image=out/arch/arm64/boot/Image.lz4
+          dtb_dir=out/google-devices/zumapro/dts
+          test -s "$image"
+
+          mkdir -p "$GITHUB_WORKSPACE/work/stage"
+          install -m 0644 "$image" "$GITHUB_WORKSPACE/work/stage/Image.lz4"
+          cat \
+            "$dtb_dir/zumapro-a0-foplp.dtb" \
+            "$dtb_dir/zumapro-a0-ipop.dtb" \
+            "$dtb_dir/zumapro-a1-foplp.dtb" \
+            "$dtb_dir/zumapro-a1-ipop.dtb" \
+            > "$GITHUB_WORKSPACE/work/stage/dtb"
+
+          "$CROSS_COMPILE"nm out/vmlinux > "$GITHUB_WORKSPACE/work/vmlinux.symbols"
+          grep -q 'susfs_init' "$GITHUB_WORKSPACE/work/vmlinux.symbols"
+          grep -q 'kbase_driver_init' "$GITHUB_WORKSPACE/work/vmlinux.symbols"
+          if grep -q 'zeromount_init' "$GITHUB_WORKSPACE/work/vmlinux.symbols"; then
+            echo 'ZeroMount unexpectedly linked into the GPU compatibility test' >&2
+            exit 1
+          fi
+          grep -aFq "$GPU_RELEASE" out/vmlinux
+          grep -aFq "$GPU_FIRMWARE" out/vmlinux
+          if grep -aFq 'mali_csffw-r54p2.bin' out/vmlinux; then
+            echo 'r54p2 firmware request unexpectedly remains in vmlinux' >&2
+            exit 1
+          fi
+          grep -aFq 'v2.2.0' out/vmlinux
+
+          cat > "$GITHUB_WORKSPACE/work/stage/BUILD-INFO.txt" <<EOF
+          Purpose: crDroid GPU compatibility bisect; fastboot boot testing only
+          Sultan: $SULTAN_COMMIT
+          GPU source: $GPU_COMPAT_REPO @ $GPU_COMPAT_COMMIT
+          GPU DDK: $GPU_RELEASE
+          GPU firmware: $GPU_FIRMWARE
+          KernelSU Next: $KSU_COMMIT ($KSU_VERSION / $KSU_TAG)
+          SUSFS: 2.2.0
+          ZeroMount: disabled and not linked
+          Enhanced SUSFS: absent
+          Networking extras: absent
+          Baseband Guard: absent
+          EOF
+          cp "$GITHUB_WORKSPACE/work/kernel.config" "$GITHUB_WORKSPACE/work/stage/kernel.config"
+          gzip -9 -c "$GITHUB_WORKSPACE/work/build.log" > "$GITHUB_WORKSPACE/work/stage/build.log.gz"
+          cd "$GITHUB_WORKSPACE/work/stage"
+          sha256sum Image.lz4 dtb kernel.config build.log.gz BUILD-INFO.txt > SHA256SUMS.txt
+          zip -9 "$GITHUB_WORKSPACE/crdroid-gpu-r54p1-compat.zip" \
+            Image.lz4 dtb kernel.config build.log.gz BUILD-INFO.txt SHA256SUMS.txt
+
+      - name: Upload compatibility artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: crdroid-gpu-r54p1-compat
+          path: crdroid-gpu-r54p1-compat.zip
+          if-no-files-found: error
+          retention-days: 14
