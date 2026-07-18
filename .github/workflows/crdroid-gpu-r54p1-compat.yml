@@ -229,7 +229,9 @@ jobs:
             exit 1
           fi
           echo 'validation OK: ZeroMount is not linked'
-          require_bytes "$GPU_RELEASE"
+          # The DDK release label can be dead-stripped by GCC LTO. Its exact
+          # source value was already checked before the build; the firmware
+          # request below is live runtime data and must remain in vmlinux.
           require_bytes "$GPU_FIRMWARE"
           forbid_bytes 'mali_csffw-r54p2.bin'
           require_bytes 'v2.2.0'
@@ -261,3 +263,15 @@ jobs:
           path: crdroid-gpu-r54p1-compat.zip
           if-no-files-found: error
           retention-days: 14
+
+      - name: Preserve diagnostic payload if final validation fails
+        if: ${{ failure() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: crdroid-gpu-r54p1-compat-validation-failure
+          path: |
+            work/stage/
+            work/kernel.config
+            work/build.log
+          if-no-files-found: warn
+          retention-days: 7
