@@ -194,19 +194,45 @@ jobs:
             > "$GITHUB_WORKSPACE/work/stage/dtb"
 
           "$CROSS_COMPILE"nm out/vmlinux > "$GITHUB_WORKSPACE/work/vmlinux.symbols"
-          grep -q 'susfs_init' "$GITHUB_WORKSPACE/work/vmlinux.symbols"
-          grep -q 'kbase_driver_init' "$GITHUB_WORKSPACE/work/vmlinux.symbols"
-          if grep -q 'zeromount_init' "$GITHUB_WORKSPACE/work/vmlinux.symbols"; then
-            echo 'ZeroMount unexpectedly linked into the GPU compatibility test' >&2
+
+          require_symbol() {
+            local symbol="$1"
+            if grep -Fq "$symbol" "$GITHUB_WORKSPACE/work/vmlinux.symbols"; then
+              echo "validation OK: symbol $symbol"
+            else
+              echo "validation FAILED: missing symbol $symbol" >&2
+              return 1
+            fi
+          }
+          require_bytes() {
+            local value="$1"
+            if grep -aFq "$value" out/vmlinux; then
+              echo "validation OK: vmlinux contains $value"
+            else
+              echo "validation FAILED: vmlinux does not contain $value" >&2
+              return 1
+            fi
+          }
+          forbid_bytes() {
+            local value="$1"
+            if grep -aFq "$value" out/vmlinux; then
+              echo "validation FAILED: vmlinux unexpectedly contains $value" >&2
+              return 1
+            else
+              echo "validation OK: vmlinux excludes $value"
+            fi
+          }
+
+          require_symbol 'susfs_init'
+          if grep -Fq 'zeromount_init' "$GITHUB_WORKSPACE/work/vmlinux.symbols"; then
+            echo 'validation FAILED: ZeroMount unexpectedly linked' >&2
             exit 1
           fi
-          grep -aFq "$GPU_RELEASE" out/vmlinux
-          grep -aFq "$GPU_FIRMWARE" out/vmlinux
-          if grep -aFq 'mali_csffw-r54p2.bin' out/vmlinux; then
-            echo 'r54p2 firmware request unexpectedly remains in vmlinux' >&2
-            exit 1
-          fi
-          grep -aFq 'v2.2.0' out/vmlinux
+          echo 'validation OK: ZeroMount is not linked'
+          require_bytes "$GPU_RELEASE"
+          require_bytes "$GPU_FIRMWARE"
+          forbid_bytes 'mali_csffw-r54p2.bin'
+          require_bytes 'v2.2.0'
 
           cat > "$GITHUB_WORKSPACE/work/stage/BUILD-INFO.txt" <<EOF
           Purpose: crDroid GPU compatibility bisect; fastboot boot testing only
