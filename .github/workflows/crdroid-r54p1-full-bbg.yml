@@ -404,7 +404,11 @@ jobs:
           require_symbol 'cake_module_init'
           require_symbol 'connmark_init_module'
           require_symbol 'bbg_init'
-          require_symbol 'bbg_mark_cred_untrusted'
+
+          # GCC LTO intentionally inlines bbg_mark_cred_untrusted() into the
+          # two KernelSU credential paths. validate_safecred2.py verifies both
+          # call sites before the build; bbg_init plus the runtime version
+          # strings below prove that the BBG implementation is linked.
 
           test -s out/net/ipv4/tcp_bbr.o
           test -s out/net/netfilter/ipset/ip_set_core.o
