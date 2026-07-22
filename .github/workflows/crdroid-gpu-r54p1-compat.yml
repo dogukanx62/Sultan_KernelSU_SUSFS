@@ -1,4 +1,4 @@
-name: crDroid Sultan GPU r54p1 compatibility
+name: crDroid Sultan r54p1 Enhanced SUSFS + Network (no BBG)
 
 on:
   workflow_dispatch:
@@ -13,7 +13,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: crdroid-sultan-gpu-r54p1-compat
+  group: crdroid-sultan-r54p1-enhanced-network-nobbg
   cancel-in-progress: false
 
 env:
@@ -32,7 +32,7 @@ env:
 
 jobs:
   build:
-    name: KSU 33201 + SUSFS 2.2 + crDroid r54p1 GPU
+    name: KSU 33201 + Enhanced SUSFS + ZeroMount + Network + r54p1 GPU
     runs-on: ubuntu-24.04
     timeout-minutes: 90
 
@@ -176,19 +176,17 @@ jobs:
             exit 1
           fi
 
-      - name: Apply exact KSU Next and SUSFS baseline
+      - name: Apply BBG-free Enhanced SUSFS, ZeroMount, and networking patches
         run: |
           set -Eeuo pipefail
           git -C work/kernel apply --check \
             "$GITHUB_WORKSPACE/.github/patches/crdroid/30_sultan-susfs-v2.2.0-zeromount.patch"
           git -C work/kernel apply \
             "$GITHUB_WORKSPACE/.github/patches/crdroid/30_sultan-susfs-v2.2.0-zeromount.patch"
-
-          # ZeroMount remains fully compiled out for this GPU-only compatibility test.
-          sed -i \
-            -e '/^CONFIG_ZEROMOUNT=/d' \
-            -e '/^# CONFIG_ZEROMOUNT is not set$/d' \
-            work/kernel/arch/arm64/configs/zumapro_defconfig
+          git -C work/kernel apply --check --whitespace=error \
+            "$GITHUB_WORKSPACE/.github/patches/crdroid/31_sultan-enhanced-susfs-wild-network-nobbg.patch"
+          git -C work/kernel apply --whitespace=error \
+            "$GITHUB_WORKSPACE/.github/patches/crdroid/31_sultan-enhanced-susfs-wild-network-nobbg.patch"
 
           git clone --filter=blob:none --no-checkout \
             "$KSU_REPO" work/kernel/KernelSU
@@ -199,13 +197,26 @@ jobs:
             "$GITHUB_WORKSPACE/.github/patches/crdroid/20_ksunext-susfs-v2.2.0-wild-33201.patch"
           git -C work/kernel/KernelSU apply \
             "$GITHUB_WORKSPACE/.github/patches/crdroid/20_ksunext-susfs-v2.2.0-wild-33201.patch"
+          git -C work/kernel/KernelSU apply --check --whitespace=error \
+            "$GITHUB_WORKSPACE/.github/patches/crdroid/21_ksunext-enhanced-susfs-nobbg-33201.patch"
+          git -C work/kernel/KernelSU apply --whitespace=error \
+            "$GITHUB_WORKSPACE/.github/patches/crdroid/21_ksunext-enhanced-susfs-nobbg-33201.patch"
 
           ln -s ../KernelSU/kernel work/kernel/drivers/kernelsu
           test -f work/kernel/drivers/kernelsu/Kconfig
+          test ! -e work/kernel/security/baseband-guard
+          if rg -n 'CONFIG_BBG|baseband[_-]guard' \
+            work/kernel/security/Kconfig \
+            work/kernel/security/Makefile \
+            work/kernel/KernelSU/kernel/Kbuild \
+            work/kernel/KernelSU/kernel/policy/app_profile.c; then
+            echo 'Baseband Guard contamination detected in BBG-free build' >&2
+            exit 1
+          fi
           git -C work/kernel diff --check
           git -C work/kernel/KernelSU diff --check
 
-      - name: Configure and verify compatibility boundary
+      - name: Configure and verify the BBG-free feature boundary
         working-directory: work/kernel
         env:
           CROSS_COMPILE: ${{ runner.temp }}/arm-gnu-14.2/bin/aarch64-none-linux-gnu-
@@ -215,21 +226,104 @@ jobs:
             KSU_VERSION_OVERRIDE="$KSU_VERSION" \
             KSU_VERSION_TAG_OVERRIDE="$KSU_TAG" zumapro_defconfig
 
-          scripts/config --file out/.config --disable ZEROMOUNT
+          required=(
+            KSU
+            KSU_SUSFS
+            KSU_SUSFS_SUS_PATH
+            KSU_SUSFS_SUS_MOUNT
+            KSU_SUSFS_SUS_KSTAT
+            KSU_SUSFS_SUS_KSTAT_REDIRECT
+            KSU_SUSFS_UNICODE_FILTER
+            KSU_SUSFS_HIDDEN_NAME
+            KSU_SUSFS_HARDENED
+            KSU_SUSFS_SPOOF_UNAME
+            KSU_SUSFS_ENABLE_LOG
+            KSU_SUSFS_HIDE_KSU_SUSFS_SYMBOLS
+            KSU_SUSFS_SPOOF_CMDLINE_OR_BOOTCONFIG
+            KSU_SUSFS_OPEN_REDIRECT
+            KSU_SUSFS_SUS_MAP
+            ZEROMOUNT
+            IP_SET
+            IP_SET_BITMAP_IP
+            IP_SET_BITMAP_IPMAC
+            IP_SET_BITMAP_PORT
+            IP_SET_HASH_IP
+            IP_SET_HASH_IPMARK
+            IP_SET_HASH_IPPORT
+            IP_SET_HASH_IPPORTIP
+            IP_SET_HASH_IPPORTNET
+            IP_SET_HASH_IPMAC
+            IP_SET_HASH_MAC
+            IP_SET_HASH_NETPORTNET
+            IP_SET_HASH_NET
+            IP_SET_HASH_NETNET
+            IP_SET_HASH_NETPORT
+            IP_SET_HASH_NETIFACE
+            IP_SET_LIST_SET
+            NETFILTER_XT_SET
+            NETFILTER_XT_TARGET_LOG
+            NETFILTER_XT_MATCH_ADDRTYPE
+            NETFILTER_XT_MATCH_RECENT
+            IP6_NF_NAT
+            IP6_NF_TARGET_MASQUERADE
+            TCP_CONG_ADVANCED
+            TCP_CONG_BBR
+            TCP_CONG_CUBIC
+            TCP_CONG_BIC
+            TCP_CONG_WESTWOOD
+            TCP_CONG_HTCP
+            DEFAULT_BBR
+            NET_SCH_FQ
+            NET_SCH_FQ_CODEL
+            NET_SCH_CAKE
+            NET_ACT_CONNMARK
+          )
+          for option in "${required[@]}"; do
+            scripts/config --file out/.config --enable "$option"
+          done
+          scripts/config --file out/.config --set-val IP_SET_MAX 65534
+          scripts/config --file out/.config --disable DEFAULT_CUBIC
+          scripts/config --file out/.config --enable DEFAULT_BBR
+          scripts/config --file out/.config --set-str DEFAULT_TCP_CONG bbr
+          scripts/config --file out/.config --disable ANDROID_VENDOR_OEM_DATA
+          scripts/config --file out/.config --set-str LSM \
+            'landlock,lockdown,yama,loadpin,safesetid,integrity,selinux,smack,tomoyo,apparmor,bpf'
           make O=out CROSS_COMPILE="$CROSS_COMPILE" olddefconfig
 
-          grep -qx 'CONFIG_KSU=y' out/.config
-          grep -qx 'CONFIG_KSU_SUSFS=y' out/.config
-          grep -qx '# CONFIG_ZEROMOUNT is not set' out/.config
+          for option in "${required[@]}"; do
+            grep -qx "CONFIG_${option}=y" out/.config || {
+              echo "Required CONFIG_${option}=y is missing" >&2
+              exit 1
+            }
+          done
+          grep -qx 'CONFIG_IP_SET_MAX=65534' out/.config
+          grep -qx 'CONFIG_DEFAULT_TCP_CONG="bbr"' out/.config
+          grep -qx '# CONFIG_DEFAULT_CUBIC is not set' out/.config
+          grep -qx '# CONFIG_ANDROID_VENDOR_OEM_DATA is not set' out/.config
+          grep -qx 'CONFIG_LSM="landlock,lockdown,yama,loadpin,safesetid,integrity,selinux,smack,tomoyo,apparmor,bpf"' out/.config
           grep -qx 'CONFIG_INTEGRATE_MODULES=y' out/.config
           grep -qx 'CONFIG_LOCALVERSION="-Sultan"' out/.config
+          if grep -qE '^CONFIG_BBG|baseband_guard' out/.config; then
+            echo 'Baseband Guard must be absent from this build' >&2
+            exit 1
+          fi
+          if grep -qE '^CONFIG_TCP_CONG_BBR[23]=' out/.config; then
+            echo 'Experimental BBRv2/v3 must not be enabled' >&2
+            exit 1
+          fi
+          test ! -e net/ipv4/tcp_bbr2.c
+          test ! -e net/ipv4/tcp_bbr3.c
+          if grep -qE 'CONFIG_KSU_SUSFS_AUTO_ADD_SUS_KSU_DEFAULT_(MOUNT|BIND_MOUNT)' out/.config; then
+            echo 'Rejected obsolete SUSFS AUTO_ADD option found' >&2
+            exit 1
+          fi
           cp out/.config "$GITHUB_WORKSPACE/work/kernel.config"
 
       - name: Build kernel and DTBs
         working-directory: work/kernel
         env:
           CROSS_COMPILE: ${{ runner.temp }}/arm-gnu-14.2/bin/aarch64-none-linux-gnu-
-          KBUILD_BUILD_USER: crdroid-gpu-compat
+          KBUILD_BUILD_USER: crdroid-enhanced-nobbg
           KBUILD_BUILD_HOST: github-actions
           KBUILD_BUILD_VERSION: "1"
         run: |
@@ -247,7 +341,7 @@ jobs:
           grep -Fq 'google-modules/gpu/mali_kbase/csf/mali_kbase_csf_firmware.o' \
             "$GITHUB_WORKSPACE/work/build.log"
 
-      - name: Validate linked GPU generation and package payload
+      - name: Validate every linked feature and package the test payload
         working-directory: work/kernel
         env:
           CROSS_COMPILE: ${{ runner.temp }}/arm-gnu-14.2/bin/aarch64-none-linux-gnu-
@@ -256,6 +350,11 @@ jobs:
           image=out/arch/arm64/boot/Image.lz4
           dtb_dir=out/google-devices/zumapro/dts
           test -s "$image"
+          image_size=$(stat -c '%s' "$image")
+          (( image_size > 10485760 && image_size < 41943040 )) || {
+            echo "Unexpected Image.lz4 size: $image_size" >&2
+            exit 1
+          }
 
           mkdir -p "$GITHUB_WORKSPACE/work/stage"
           install -m 0644 "$image" "$GITHUB_WORKSPACE/work/stage/Image.lz4"
@@ -297,43 +396,67 @@ jobs:
           }
 
           require_symbol 'susfs_init'
-          if grep -Fq 'zeromount_init' "$GITHUB_WORKSPACE/work/vmlinux.symbols"; then
-            echo 'validation FAILED: ZeroMount unexpectedly linked' >&2
-            exit 1
-          fi
-          echo 'validation OK: ZeroMount is not linked'
+          require_symbol 'zeromount_init'
+          require_symbol 'susfs_add_kstat_redirect_entry'
+          require_symbol 'susfs_check_unicode_filename'
+          require_symbol 'susfs_is_hidden_android_data_dentry'
+          require_symbol 'tcp_bbr_cong_ops'
+          require_symbol 'ip_set_init'
+          require_symbol 'xt_set_init'
+          require_symbol 'ip6table_nat_init'
+          require_symbol 'cake_module_init'
+          require_symbol 'connmark_init_module'
+
+          test -s out/net/ipv4/tcp_bbr.o
+          test -s out/net/netfilter/ipset/ip_set_core.o
+          test -s out/net/netfilter/xt_set.o
+          test -s out/net/ipv6/netfilter/ip6table_nat.o
+          test -s out/net/sched/sch_cake.o
+          test -s out/net/sched/act_connmark.o
+
           # The DDK release label can be dead-stripped by GCC LTO. Its exact
           # source value was already checked before the build; the firmware
           # request below is live runtime data and must remain in vmlinux.
           require_bytes "$GPU_FIRMWARE"
           forbid_bytes 'mali_csffw-r54p2.bin'
           require_bytes 'v2.2.0'
+          require_bytes 'CMD_SUSFS_ADD_SUS_KSTAT_REDIRECT'
+          require_bytes 'CONFIG_KSU_SUSFS_SUS_KSTAT_REDIRECT'
+          require_bytes 'CONFIG_KSU_SUSFS_UNICODE_FILTER'
+          require_bytes 'CONFIG_KSU_SUSFS_HIDDEN_NAME'
+          require_bytes 'CONFIG_KSU_SUSFS_HARDENED'
+          forbid_bytes 'baseband_guard'
+          forbid_bytes 'cef0daae-sultan-safecred2'
+          grep -Fq -- '-- KernelSU-Next pinned version: 33201' \
+            "$GITHUB_WORKSPACE/work/build.log"
 
           cat > "$GITHUB_WORKSPACE/work/stage/BUILD-INFO.txt" <<EOF
-          Purpose: crDroid GPU compatibility bisect; fastboot boot testing only
+          Purpose: crDroid full-feature BBG-free fastboot boot test
           Sultan: $SULTAN_COMMIT
           GPU source: $GPU_COMPAT_REPO @ $GPU_COMPAT_COMMIT
           GPU DDK: $GPU_RELEASE
           GPU firmware: $GPU_FIRMWARE
           KernelSU Next: $KSU_COMMIT ($KSU_VERSION / $KSU_TAG)
           SUSFS: 2.2.0
-          ZeroMount: disabled and not linked
-          Enhanced SUSFS: absent
-          Networking extras: absent
-          Baseband Guard: absent
+          ZeroMount: enabled and linked
+          Enhanced SUSFS: kstat redirect, Unicode filter, hidden names, hardened
+          Networking: Wild config set, stable in-tree BBRv1 default, IPSet/XT_SET
+          Networking extras: IPv6 NAT, FQ/FQ_CODEL/CAKE, connmark
+          Experimental BBRv2/v3: absent
+          Baseband Guard: excluded from source and image
           EOF
           cp "$GITHUB_WORKSPACE/work/kernel.config" "$GITHUB_WORKSPACE/work/stage/kernel.config"
           gzip -9 -c "$GITHUB_WORKSPACE/work/build.log" > "$GITHUB_WORKSPACE/work/stage/build.log.gz"
           cd "$GITHUB_WORKSPACE/work/stage"
           sha256sum Image.lz4 dtb kernel.config build.log.gz BUILD-INFO.txt > SHA256SUMS.txt
-          zip -9 "$GITHUB_WORKSPACE/crdroid-gpu-r54p1-compat.zip" \
+          zip -9 "$GITHUB_WORKSPACE/crdroid-r54p1-enhanced-network-nobbg.zip" \
             Image.lz4 dtb kernel.config build.log.gz BUILD-INFO.txt SHA256SUMS.txt
 
-      - name: Upload compatibility artifact
+      - name: Upload BBG-free full-feature artifact
         uses: actions/upload-artifact@v4
         with:
-          name: crdroid-gpu-r54p1-compat
-          path: crdroid-gpu-r54p1-compat.zip
+          name: crdroid-r54p1-enhanced-network-nobbg
+          path: crdroid-r54p1-enhanced-network-nobbg.zip
           if-no-files-found: error
           retention-days: 14
 
@@ -341,7 +464,7 @@ jobs:
         if: ${{ failure() }}
         uses: actions/upload-artifact@v4
         with:
-          name: crdroid-gpu-r54p1-compat-validation-failure
+          name: crdroid-r54p1-enhanced-network-nobbg-validation-failure
           path: |
             work/stage/
             work/kernel.config
