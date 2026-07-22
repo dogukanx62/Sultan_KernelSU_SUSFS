@@ -103,6 +103,12 @@ jobs:
             "$glue/mali_kbase/Kbuild"
           cp -a work/kernel/google-modules/gpu/mali_kbase/Makefile \
             "$glue/mali_kbase/Makefile"
+          # r54p1 gates the MCU/L2 state trace events behind Gator while its
+          # call sites remain unconditional. Sultan intentionally disables
+          # Gator and carries these lightweight trace events unconditionally.
+          # Keep that exact compatibility fix or r54p1 fails to compile.
+          cp -a work/kernel/google-modules/gpu/mali_kbase/mali_linux_trace.h \
+            "$glue/mali_kbase/mali_linux_trace.h"
           cp -a work/kernel/google-modules/gpu/mali_kbase/platform/pixel/Kbuild \
             "$glue/mali_kbase/platform/pixel/Kbuild"
           cp -a work/kernel/google-modules/gpu/mali_kbase/platform/pixel/pixel_gpu_debug.h \
@@ -124,6 +130,8 @@ jobs:
             work/kernel/google-modules/gpu/mali_kbase/Kbuild
           install -m 0644 "$glue/mali_kbase/Makefile" \
             work/kernel/google-modules/gpu/mali_kbase/Makefile
+          install -m 0644 "$glue/mali_kbase/mali_linux_trace.h" \
+            work/kernel/google-modules/gpu/mali_kbase/mali_linux_trace.h
           install -m 0644 "$glue/mali_kbase/platform/pixel/Kbuild" \
             work/kernel/google-modules/gpu/mali_kbase/platform/pixel/Kbuild
           install -m 0644 "$glue/mali_kbase/platform/pixel/pixel_gpu_debug.h" \
@@ -149,6 +157,12 @@ jobs:
             work/kernel/google-modules/gpu/mali_kbase/Makefile
           grep -Fq 'CONFIG_MALI_GATOR_SUPPORT ?= n' \
             work/kernel/google-modules/gpu/mali_kbase/Makefile
+          cmp -s "$glue/mali_kbase/mali_linux_trace.h" \
+            work/kernel/google-modules/gpu/mali_kbase/mali_linux_trace.h
+          grep -Fq 'TRACE_EVENT(mali_pm_mcu_state,' \
+            work/kernel/google-modules/gpu/mali_kbase/mali_linux_trace.h
+          grep -Fq 'TRACE_EVENT(mali_pm_l2_state,' \
+            work/kernel/google-modules/gpu/mali_kbase/mali_linux_trace.h
           grep -Fq 'include $(ROOT_DIR)/private/google-modules/soc/gs/Makefile.include' \
             work/kernel/google-modules/gpu/mali_pixel/Makefile
           if grep -Fq 'ccflags-y += -DCONFIG_MALI_PIXEL_GPU_SSCD' \
