@@ -1,13 +1,21 @@
-name: crDroid Sultan r54p1 Enhanced SUSFS + Network (no BBG)
+name: crDroid Sultan r54p1 Full + BBG safecred2
 
 on:
   workflow_dispatch:
+  push:
+    branches:
+      - main
+    paths:
+      - .github/workflows/crdroid-r54p1-full-bbg.yml
+      - .github/patches/crdroid/21_ksunext-enhanced-susfs-bbg-33201.patch
+      - .github/patches/crdroid/31_sultan-enhanced-susfs-wild-network-bbg.patch
+      - .github/scripts/validate_safecred2.py
 
 permissions:
   contents: read
 
 concurrency:
-  group: crdroid-sultan-r54p1-enhanced-network-nobbg
+  group: crdroid-sultan-r54p1-full-bbg-safecred2
   cancel-in-progress: false
 
 env:
@@ -26,7 +34,7 @@ env:
 
 jobs:
   build:
-    name: KSU 33201 + Enhanced SUSFS + ZeroMount + Network + r54p1 GPU
+    name: KSU 33201 + Enhanced SUSFS + ZeroMount + Network + BBG + r54p1
     runs-on: ubuntu-24.04
     timeout-minutes: 90
 
@@ -170,7 +178,7 @@ jobs:
             exit 1
           fi
 
-      - name: Apply BBG-free Enhanced SUSFS, ZeroMount, and networking patches
+      - name: Apply Enhanced SUSFS, ZeroMount, networking, and BBG safecred2
         run: |
           set -Eeuo pipefail
           git -C work/kernel apply --check \
@@ -178,9 +186,9 @@ jobs:
           git -C work/kernel apply \
             "$GITHUB_WORKSPACE/.github/patches/crdroid/30_sultan-susfs-v2.2.0-zeromount.patch"
           git -C work/kernel apply --check --whitespace=error \
-            "$GITHUB_WORKSPACE/.github/patches/crdroid/31_sultan-enhanced-susfs-wild-network-nobbg.patch"
+            "$GITHUB_WORKSPACE/.github/patches/crdroid/31_sultan-enhanced-susfs-wild-network-bbg.patch"
           git -C work/kernel apply --whitespace=error \
-            "$GITHUB_WORKSPACE/.github/patches/crdroid/31_sultan-enhanced-susfs-wild-network-nobbg.patch"
+            "$GITHUB_WORKSPACE/.github/patches/crdroid/31_sultan-enhanced-susfs-wild-network-bbg.patch"
 
           git clone --filter=blob:none --no-checkout \
             "$KSU_REPO" work/kernel/KernelSU
@@ -192,25 +200,19 @@ jobs:
           git -C work/kernel/KernelSU apply \
             "$GITHUB_WORKSPACE/.github/patches/crdroid/20_ksunext-susfs-v2.2.0-wild-33201.patch"
           git -C work/kernel/KernelSU apply --check --whitespace=error \
-            "$GITHUB_WORKSPACE/.github/patches/crdroid/21_ksunext-enhanced-susfs-nobbg-33201.patch"
+            "$GITHUB_WORKSPACE/.github/patches/crdroid/21_ksunext-enhanced-susfs-bbg-33201.patch"
           git -C work/kernel/KernelSU apply --whitespace=error \
-            "$GITHUB_WORKSPACE/.github/patches/crdroid/21_ksunext-enhanced-susfs-nobbg-33201.patch"
+            "$GITHUB_WORKSPACE/.github/patches/crdroid/21_ksunext-enhanced-susfs-bbg-33201.patch"
 
           ln -s ../KernelSU/kernel work/kernel/drivers/kernelsu
           test -f work/kernel/drivers/kernelsu/Kconfig
-          test ! -e work/kernel/security/baseband-guard
-          if rg -n 'CONFIG_BBG|baseband[_-]guard' \
-            work/kernel/security/Kconfig \
-            work/kernel/security/Makefile \
-            work/kernel/KernelSU/kernel/Kbuild \
-            work/kernel/KernelSU/kernel/policy/app_profile.c; then
-            echo 'Baseband Guard contamination detected in BBG-free build' >&2
-            exit 1
-          fi
+          test -f work/kernel/security/baseband-guard/baseband_guard.c
+          python3 "$GITHUB_WORKSPACE/.github/scripts/validate_safecred2.py" \
+            work/kernel work/kernel/KernelSU
           git -C work/kernel diff --check
           git -C work/kernel/KernelSU diff --check
 
-      - name: Configure and verify the BBG-free feature boundary
+      - name: Configure and verify the safecred2 feature boundary
         working-directory: work/kernel
         env:
           CROSS_COMPILE: ${{ runner.temp }}/arm-gnu-14.2/bin/aarch64-none-linux-gnu-
@@ -271,6 +273,7 @@ jobs:
             NET_SCH_FQ_CODEL
             NET_SCH_CAKE
             NET_ACT_CONNMARK
+            BBG
           )
           for option in "${required[@]}"; do
             scripts/config --file out/.config --enable "$option"
@@ -280,8 +283,10 @@ jobs:
           scripts/config --file out/.config --enable DEFAULT_BBR
           scripts/config --file out/.config --set-str DEFAULT_TCP_CONG bbr
           scripts/config --file out/.config --disable ANDROID_VENDOR_OEM_DATA
+          scripts/config --file out/.config --disable BBG_BLOCK_BOOT
+          scripts/config --file out/.config --disable BBG_BLOCK_RECOVERY
           scripts/config --file out/.config --set-str LSM \
-            'landlock,lockdown,yama,loadpin,safesetid,integrity,selinux,smack,tomoyo,apparmor,bpf'
+            'landlock,lockdown,yama,loadpin,safesetid,integrity,selinux,smack,tomoyo,apparmor,bpf,baseband_guard'
           make O=out CROSS_COMPILE="$CROSS_COMPILE" olddefconfig
 
           for option in "${required[@]}"; do
@@ -294,13 +299,11 @@ jobs:
           grep -qx 'CONFIG_DEFAULT_TCP_CONG="bbr"' out/.config
           grep -qx '# CONFIG_DEFAULT_CUBIC is not set' out/.config
           grep -qx '# CONFIG_ANDROID_VENDOR_OEM_DATA is not set' out/.config
-          grep -qx 'CONFIG_LSM="landlock,lockdown,yama,loadpin,safesetid,integrity,selinux,smack,tomoyo,apparmor,bpf"' out/.config
+          grep -qx '# CONFIG_BBG_BLOCK_BOOT is not set' out/.config
+          grep -qx '# CONFIG_BBG_BLOCK_RECOVERY is not set' out/.config
+          grep -qx 'CONFIG_LSM="landlock,lockdown,yama,loadpin,safesetid,integrity,selinux,smack,tomoyo,apparmor,bpf,baseband_guard"' out/.config
           grep -qx 'CONFIG_INTEGRATE_MODULES=y' out/.config
           grep -qx 'CONFIG_LOCALVERSION="-Sultan"' out/.config
-          if grep -qE '^CONFIG_BBG|baseband_guard' out/.config; then
-            echo 'Baseband Guard must be absent from this build' >&2
-            exit 1
-          fi
           if grep -qE '^CONFIG_TCP_CONG_BBR[23]=' out/.config; then
             echo 'Experimental BBRv2/v3 must not be enabled' >&2
             exit 1
@@ -317,7 +320,7 @@ jobs:
         working-directory: work/kernel
         env:
           CROSS_COMPILE: ${{ runner.temp }}/arm-gnu-14.2/bin/aarch64-none-linux-gnu-
-          KBUILD_BUILD_USER: crdroid-enhanced-nobbg
+          KBUILD_BUILD_USER: crdroid-full-bbg
           KBUILD_BUILD_HOST: github-actions
           KBUILD_BUILD_VERSION: "1"
         run: |
@@ -400,6 +403,8 @@ jobs:
           require_symbol 'ip6table_nat_init'
           require_symbol 'cake_module_init'
           require_symbol 'connmark_init_module'
+          require_symbol 'bbg_init'
+          require_symbol 'bbg_mark_cred_untrusted'
 
           test -s out/net/ipv4/tcp_bbr.o
           test -s out/net/netfilter/ipset/ip_set_core.o
@@ -419,13 +424,13 @@ jobs:
           require_bytes 'CONFIG_KSU_SUSFS_UNICODE_FILTER'
           require_bytes 'CONFIG_KSU_SUSFS_HIDDEN_NAME'
           require_bytes 'CONFIG_KSU_SUSFS_HARDENED'
-          forbid_bytes 'baseband_guard'
-          forbid_bytes 'cef0daae-sultan-safecred2'
+          require_bytes 'baseband_guard version'
+          require_bytes 'cef0daae-sultan-safecred2'
           grep -Fq -- '-- KernelSU-Next pinned version: 33201' \
             "$GITHUB_WORKSPACE/work/build.log"
 
           cat > "$GITHUB_WORKSPACE/work/stage/BUILD-INFO.txt" <<EOF
-          Purpose: crDroid full-feature BBG-free fastboot boot test
+          Purpose: crDroid full-feature BBG safecred2 fastboot boot test
           Sultan: $SULTAN_COMMIT
           GPU source: $GPU_COMPAT_REPO @ $GPU_COMPAT_COMMIT
           GPU DDK: $GPU_RELEASE
@@ -437,20 +442,22 @@ jobs:
           Networking: Wild config set, stable in-tree BBRv1 default, IPSet/XT_SET
           Networking extras: IPv6 NAT, FQ/FQ_CODEL/CAKE, connmark
           Experimental BBRv2/v3: absent
-          Baseband Guard: excluded from source and image
+          Baseband Guard: safecred2 enabled and linked
+          BBG boot/recovery partition blocking: disabled
+          BBG KSU credential marking: enabled
           EOF
           cp "$GITHUB_WORKSPACE/work/kernel.config" "$GITHUB_WORKSPACE/work/stage/kernel.config"
           gzip -9 -c "$GITHUB_WORKSPACE/work/build.log" > "$GITHUB_WORKSPACE/work/stage/build.log.gz"
           cd "$GITHUB_WORKSPACE/work/stage"
           sha256sum Image.lz4 dtb kernel.config build.log.gz BUILD-INFO.txt > SHA256SUMS.txt
-          zip -9 "$GITHUB_WORKSPACE/crdroid-r54p1-enhanced-network-nobbg.zip" \
+          zip -9 "$GITHUB_WORKSPACE/crdroid-r54p1-full-bbg-safecred2.zip" \
             Image.lz4 dtb kernel.config build.log.gz BUILD-INFO.txt SHA256SUMS.txt
 
-      - name: Upload BBG-free full-feature artifact
+      - name: Upload full-feature BBG safecred2 artifact
         uses: actions/upload-artifact@v4
         with:
-          name: crdroid-r54p1-enhanced-network-nobbg
-          path: crdroid-r54p1-enhanced-network-nobbg.zip
+          name: crdroid-r54p1-full-bbg-safecred2
+          path: crdroid-r54p1-full-bbg-safecred2.zip
           if-no-files-found: error
           retention-days: 14
 
@@ -458,7 +465,7 @@ jobs:
         if: ${{ failure() }}
         uses: actions/upload-artifact@v4
         with:
-          name: crdroid-r54p1-enhanced-network-nobbg-validation-failure
+          name: crdroid-r54p1-full-bbg-safecred2-validation-failure
           path: |
             work/stage/
             work/kernel.config
