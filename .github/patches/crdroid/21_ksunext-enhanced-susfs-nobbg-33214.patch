@@ -1,0 +1,94 @@
+diff --git a/kernel/Kbuild b/kernel/Kbuild
+index 4cdef512ae5880da9349337257b47be40c429c44..3a5c233728d86536a1b6e38e8686830e4c27c233 100644
+--- a/kernel/Kbuild
++++ b/kernel/Kbuild
+@@ -83,8 +83,11 @@ $(info -- KernelSU-Next Git repo detected at: $(GIT_ROOT))
+ endif
+ endif
+ 
+-# Calculate version if git version is available
+-ifdef KSU_GIT_VERSION_VALID
++# Calculate version if git version is available, or honor a pinned builder value.
++ifdef KSU_VERSION_OVERRIDE
++$(info -- KernelSU-Next pinned version: $(KSU_VERSION_OVERRIDE))
++ccflags-y += -DKSU_VERSION=$(KSU_VERSION_OVERRIDE)
++else ifdef KSU_GIT_VERSION_VALID
+ # ksu_version: major * 30000 + git version for historical reasons
+ $(eval KSU_VERSION=$(shell expr 30000 + $(KSU_GIT_VERSION)))
+ $(info -- KernelSU-Next version: $(KSU_VERSION))
+@@ -97,7 +100,10 @@ $(info -- KernelSU-Next version fallback: $(KSU_VERSION_FALLBACK))
+ ccflags-y += -DKSU_VERSION=$(KSU_VERSION_FALLBACK)
+ endif
+ 
+-ifdef KSU_GIT_VERSION_VALID
++ifdef KSU_VERSION_TAG_OVERRIDE
++$(info -- KernelSU-Next pinned tag: $(KSU_VERSION_TAG_OVERRIDE))
++ccflags-y += -DKSU_VERSION_TAG=\"$(KSU_VERSION_TAG_OVERRIDE)\"
++else ifdef KSU_GIT_VERSION_VALID
+ $(eval KSU_VERSION_TAG=$(KSU_GIT_TAG))
+ $(info -- KernelSU-Next tag: $(KSU_VERSION_TAG))
+ ccflags-y += -DKSU_VERSION_TAG=\"$(KSU_VERSION_TAG)\"
+diff --git a/kernel/Kconfig b/kernel/Kconfig
+index dd7b3420a419432ed3a19ecb41f945da8d755a57..0ab2ba7eab25b9f347df6ae9725e9bc3b3397eb7 100644
+--- a/kernel/Kconfig
++++ b/kernel/Kconfig
+@@ -70,6 +70,43 @@ config KSU_SUSFS_SUS_KSTAT
+ 	  - Allow spoofing the kstat of user-defined file/directory.
+ 	  - Effective only on zygote spawned user app process with uid >= 10000.
+ 
++config KSU_SUSFS_SUS_KSTAT_REDIRECT
++	bool "Enable kstat redirect metadata"
++	depends on KSU_SUSFS_SUS_KSTAT
++	default y
++	help
++	  - Allow a virtual path and its ZeroMount backing path to share
++	    user-provided spoofed metadata.
++	  - Entries are keyed by both inode and device to avoid cross-filesystem
++	    inode collisions.
++
++config KSU_SUSFS_UNICODE_FILTER
++	bool "Block suspicious invisible Unicode path components"
++	depends on KSU_SUSFS
++	default y
++	help
++	  - Reject known invisible and bidirectional Unicode code points used to
++	    bypass scoped-storage path checks.
++	  - Root and Android system processes are excluded.
++
++config KSU_SUSFS_HIDDEN_NAME
++	bool "Hide registered Android data package names"
++	depends on KSU_SUSFS_SUS_PATH
++	default y
++	help
++	  - Remember package directory names registered through SUS_PATH and hide
++	    them from other unmounted application processes under Android/data
++	    and Android/obb.
++
++config KSU_SUSFS_HARDENED
++	bool "SUSFS v2.2 hardened integration"
++	depends on KSU_SUSFS
++	default y
++	help
++	  - Marks the v2.2 concurrency, bounds-checking and error-handling fixes
++	    used by this integration. Disabling this does not restore older,
++	    unsafe SUSFS behavior.
++
+ config KSU_SUSFS_SPOOF_UNAME
+ 	bool "Enable to spoof uname"
+ 	depends on KSU_SUSFS
+diff --git a/kernel/supercall/dispatch.c b/kernel/supercall/dispatch.c
+index 527944827fd40355ccd01b5aef5da0bbe5665beb..572dfcedbc5f42b2adedb8b1a5b79c5c05fd8305 100644
+--- a/kernel/supercall/dispatch.c
++++ b/kernel/supercall/dispatch.c
+@@ -643,6 +643,11 @@ int ksu_handle_sys_reboot(int magic1, int magic2, unsigned int cmd, void __user
+             case CMD_SUSFS_ADD_SUS_KSTAT_STATICALLY:
+                 susfs_add_sus_kstat(arg);
+                 return 0;
++#ifdef CONFIG_KSU_SUSFS_SUS_KSTAT_REDIRECT
++            case CMD_SUSFS_ADD_SUS_KSTAT_REDIRECT:
++                susfs_add_sus_kstat_redirect(arg);
++                return 0;
++#endif // #ifdef CONFIG_KSU_SUSFS_SUS_KSTAT_REDIRECT
+ #endif // #ifdef CONFIG_KSU_SUSFS_SUS_KSTAT
+ #ifdef CONFIG_KSU_SUSFS_SPOOF_UNAME
+             case CMD_SUSFS_SET_UNAME: {
