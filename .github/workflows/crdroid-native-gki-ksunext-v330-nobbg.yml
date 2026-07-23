@@ -81,8 +81,10 @@ jobs:
             --partial-clone \
             --clone-filter=blob:limit=10M
 
-          git -C .repo/manifests fetch --depth=1 origin "$MANIFEST_COMMIT"
-          git -C .repo/manifests checkout --detach "$MANIFEST_COMMIT"
+          # Keep repo's manifest checkout attached to MANIFEST_BRANCH. Detaching
+          # it makes repo sync fall back to refs/heads/master while updating its
+          # own manifest project. The exact commit guard still makes any branch
+          # movement fail closed before sources are synchronized.
           test "$(git -C .repo/manifests rev-parse HEAD)" = "$MANIFEST_COMMIT"
 
           repo sync -c --no-clone-bundle --no-tags --force-sync -j4 \
