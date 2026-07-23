@@ -1,0 +1,402 @@
+name: crDroid native GKI + KSU Next 3.3.0 (no BBG)
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - ksunext-v3.3.0-bbg-fix-test
+    paths:
+      - .github/workflows/crdroid-native-gki-ksunext-v330-nobbg.yml
+      - .github/patches/crdroid-gki/30_crdroid-native-gki-susfs-enhanced-zeromount-network.patch
+      - .github/patches/crdroid/20_ksunext-susfs-v2.2.0-wild-33214.patch
+      - .github/patches/crdroid/21_ksunext-enhanced-susfs-nobbg-33214.patch
+
+permissions:
+  contents: read
+
+concurrency:
+  group: crdroid-native-gki-ksunext-v330-nobbg
+  cancel-in-progress: false
+
+env:
+  MANIFEST_REPO: https://github.com/crdroidandroid/android_kernel_google_gs-6.1_manifest.git
+  MANIFEST_BRANCH: "16.0"
+  MANIFEST_COMMIT: a881410313ad29720d6cf632c0439089e1f0b4c7
+  COMMON_COMMIT: ec45f20f38eaf2c9ca7ed9a34a1e74637291241c
+  COMMON_TAG: android14-6.1-2025-08_r11
+  DEVICES_COMMIT: 95701ad8315639eaa0da13ec1386ac4afe90f5b1
+  BUILD_REPO_COMMIT: d02d210ea8b8b33622e42f6eeee1eb729567761a
+  CLANG_VERSION: r487747c
+  KSU_REPO: https://github.com/KernelSU-Next/KernelSU-Next.git
+  KSU_COMMIT: 3b18216f71df189ab3d1b1ce0bdb21be1268e771
+  KSU_TAG: v3.3.0
+  KSU_VERSION: "33214"
+  GKI_PATCH_SHA256: c850dda14ba06799759b575cc6bf809ae7cc5a165f76ccbaea06c07f5c9e5e80
+  KSU_SUSFS_PATCH_SHA256: 48d55c11c665a237f1fe2fe6f9a4dbb3a8ead02e10a0ffebcc14fa82745e2179
+  KSU_ENHANCED_PATCH_SHA256: 18485d43ca3e26b2f8ed5bf3d8956bd9a9cba2a7ccdf274452db04052c07e032
+  BUILD_NUMBER: "15260282"
+  SOURCE_DATE_EPOCH: "1776688741"
+  KLEAF_IGNORE_MISSING_PROJECTS: "true"
+  KLEAF_USE_KLEAF_LOCALVERSION: "false"
+
+jobs:
+  build:
+    name: Exact crDroid GKI + KSU/SUSFS/ZeroMount/Network
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+
+    steps:
+      - name: Check out integration files
+        uses: actions/checkout@v4
+
+      - name: Install host dependencies
+        run: |
+          set -Eeuo pipefail
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends -y \
+            bc bison build-essential ca-certificates curl flex git \
+            libelf-dev libssl-dev lz4 python3 ripgrep rsync unzip xz-utils
+
+      - name: Install repo launcher
+        run: |
+          set -Eeuo pipefail
+          install -d "$RUNNER_TEMP/repo-bin"
+          curl --fail --location --proto '=https' --tlsv1.2 \
+            --retry 5 --retry-all-errors \
+            https://storage.googleapis.com/git-repo-downloads/repo \
+            -o "$RUNNER_TEMP/repo-bin/repo"
+          chmod 0755 "$RUNNER_TEMP/repo-bin/repo"
+          echo "$RUNNER_TEMP/repo-bin" >> "$GITHUB_PATH"
+
+      - name: Sync the pinned crDroid GKI build environment
+        run: |
+          set -Eeuo pipefail
+          mkdir -p work
+          cd work
+
+          repo init \
+            -u "$MANIFEST_REPO" \
+            -b "$MANIFEST_BRANCH" \
+            --depth=1 \
+            --partial-clone \
+            --clone-filter=blob:limit=10M
+
+          git -C .repo/manifests fetch --depth=1 origin "$MANIFEST_COMMIT"
+          git -C .repo/manifests checkout --detach "$MANIFEST_COMMIT"
+          test "$(git -C .repo/manifests rev-parse HEAD)" = "$MANIFEST_COMMIT"
+
+          repo sync -c --no-clone-bundle --no-tags --force-sync -j4 \
+            aosp \
+            build/bazel_common_rules \
+            build/kernel \
+            external/bazel-skylib \
+            external/python/absl-py \
+            external/stardoc \
+            kernel/configs \
+            prebuilts/bazel/linux-x86_64 \
+            prebuilts/build-tools \
+            prebuilts/clang/host/linux-x86 \
+            prebuilts/gcc/linux-x86/host/x86_64-linux-glibc2.17-4.8 \
+            prebuilts/jdk/jdk11 \
+            prebuilts/kernel-build-tools \
+            prebuilts/ndk-r23 \
+            private/devices \
+            tools/mkbootimg
+
+          test "$(git -C .repo/manifests rev-parse HEAD)" = "$MANIFEST_COMMIT"
+          test "$(git -C aosp rev-parse HEAD)" = "$COMMON_COMMIT"
+          test "$(git -C aosp describe --tags --exact-match HEAD)" = "$COMMON_TAG"
+          test "$(git -C private/devices rev-parse HEAD)" = "$DEVICES_COMMIT"
+          test "$(git -C build/kernel rev-parse HEAD)" = "$BUILD_REPO_COMMIT"
+          grep -Fxq "CLANG_VERSION=$CLANG_VERSION" \
+            aosp/build.config.constants
+          test -x "prebuilts/clang/host/linux-x86/clang-$CLANG_VERSION/bin/clang"
+          test -f WORKSPACE
+          test -f common/BUILD.bazel
+          test -x tools/bazel
+          "prebuilts/clang/host/linux-x86/clang-$CLANG_VERSION/bin/clang" \
+            --version | tee "$GITHUB_WORKSPACE/clang-version.txt"
+          grep -Fq "clang version 17.0.2" "$GITHUB_WORKSPACE/clang-version.txt"
+
+      - name: Apply the GKI feature port and pinned KernelSU Next
+        working-directory: work
+        run: |
+          set -Eeuo pipefail
+
+          gki_patch="$GITHUB_WORKSPACE/.github/patches/crdroid-gki/30_crdroid-native-gki-susfs-enhanced-zeromount-network.patch"
+          ksu_susfs_patch="$GITHUB_WORKSPACE/.github/patches/crdroid/20_ksunext-susfs-v2.2.0-wild-33214.patch"
+          ksu_enhanced_patch="$GITHUB_WORKSPACE/.github/patches/crdroid/21_ksunext-enhanced-susfs-nobbg-33214.patch"
+
+          printf '%s  %s\n' "$GKI_PATCH_SHA256" "$gki_patch" | sha256sum -c -
+          printf '%s  %s\n' "$KSU_SUSFS_PATCH_SHA256" "$ksu_susfs_patch" | sha256sum -c -
+          printf '%s  %s\n' "$KSU_ENHANCED_PATCH_SHA256" "$ksu_enhanced_patch" | sha256sum -c -
+
+          git -C aosp apply --check --whitespace=error "$gki_patch"
+          git -C aosp apply --whitespace=error "$gki_patch"
+
+          git clone --filter=blob:none --no-checkout \
+            "$KSU_REPO" aosp/KernelSU-Next
+          git -C aosp/KernelSU-Next fetch --depth=1 origin "$KSU_COMMIT"
+          git -C aosp/KernelSU-Next fetch --depth=1 origin \
+            "refs/tags/$KSU_TAG:refs/tags/$KSU_TAG"
+          git -C aosp/KernelSU-Next checkout --detach "$KSU_COMMIT"
+          test "$(git -C aosp/KernelSU-Next rev-parse HEAD)" = "$KSU_COMMIT"
+          test "$(git -C aosp/KernelSU-Next rev-parse "$KSU_TAG^{commit}")" = \
+            "$KSU_COMMIT"
+
+          git -C aosp/KernelSU-Next apply --check --whitespace=error \
+            "$ksu_susfs_patch"
+          git -C aosp/KernelSU-Next apply --whitespace=error \
+            "$ksu_susfs_patch"
+          git -C aosp/KernelSU-Next apply --check --whitespace=error \
+            "$ksu_enhanced_patch"
+          git -C aosp/KernelSU-Next apply --whitespace=error \
+            "$ksu_enhanced_patch"
+
+          sed -i \
+            "s/^KSU_VERSION_FALLBACK := 1$/KSU_VERSION_FALLBACK := $KSU_VERSION/" \
+            aosp/KernelSU-Next/kernel/Kbuild
+          sed -i \
+            "s/^KSU_VERSION_TAG_FALLBACK := v0.0.1$/KSU_VERSION_TAG_FALLBACK := $KSU_TAG/" \
+            aosp/KernelSU-Next/kernel/Kbuild
+          grep -Fxq "KSU_VERSION_FALLBACK := $KSU_VERSION" \
+            aosp/KernelSU-Next/kernel/Kbuild
+          grep -Fxq "KSU_VERSION_TAG_FALLBACK := $KSU_TAG" \
+            aosp/KernelSU-Next/kernel/Kbuild
+
+          ln -s ../KernelSU-Next/kernel aosp/drivers/kernelsu
+          test -f aosp/drivers/kernelsu/Kconfig
+          git -C aosp add -N \
+            drivers/kernelsu \
+            fs/susfs.c \
+            fs/zeromount.c \
+            include/linux/susfs.h \
+            include/linux/susfs_def.h \
+            include/linux/zeromount.h
+
+          # The patched defconfig intentionally adds features, so the stock
+          # savedefconfig textual comparison is replaced by strict checks on
+          # the generated .config after Kleaf resolves all dependencies.
+          sed -i \
+            's/^POST_DEFCONFIG_CMDS="check_defconfig"$/POST_DEFCONFIG_CMDS=""/' \
+            aosp/build.config.gki
+          grep -Fxq 'POST_DEFCONFIG_CMDS=""' aosp/build.config.gki
+
+          # Preserve the crDroid GKI identity even though the working tree
+          # contains the feature port. BUILD_NUMBER appends the final ab suffix.
+          printf '%s\n' '-android14-11-gec45f20f38ea' > aosp/.scmversion
+
+          git -C aosp diff --check
+          git -C aosp/KernelSU-Next diff --check
+          mapfile -t patch_debris < <(
+            find aosp \( -name '*.rej' -o -name '*.orig' \) -print
+          )
+          if (( ${#patch_debris[@]} )); then
+            printf '%s\n' "${patch_debris[@]}"
+            exit 1
+          fi
+
+          test ! -e aosp/security/baseband-guard
+          if rg -n 'CONFIG_BBG|baseband[_-]guard' \
+            aosp/arch/arm64/configs/gki_defconfig \
+            aosp/security/Kconfig \
+            aosp/security/Makefile \
+            aosp/KernelSU-Next/kernel; then
+            echo "BBG contamination detected in the BBG-free baseline" >&2
+            exit 1
+          fi
+
+          if rg -n '^EXPORT_SYMBOL(_GPL)?\\(' \
+            aosp/fs/susfs.c \
+            aosp/fs/zeromount.c \
+            aosp/KernelSU-Next/kernel; then
+            echo "The feature port unexpectedly widens the GKI export surface" >&2
+            exit 1
+          fi
+
+      - name: Build only the native GKI kernel and resolved config
+        working-directory: work
+        run: |
+          set -Eeuo pipefail
+          set -o pipefail
+
+          tools/bazel build \
+            --config=fast \
+            --config=stamp \
+            //common:kernel_aarch64 \
+            //common:kernel_aarch64_config \
+            2>&1 | tee "$GITHUB_WORKSPACE/build.log"
+
+      - name: Collect and verify the exact driver/KMI boundary
+        working-directory: work
+        run: |
+          set -Eeuo pipefail
+
+          image="$(find -L bazel-bin -type f \
+            -path '*/kernel_aarch64/Image' -print -quit)"
+          image_lz4="$(find -L bazel-bin -type f \
+            -path '*/kernel_aarch64/Image.lz4' -print -quit)"
+          config="$(find -L bazel-bin -type f \
+            -path '*/kernel_aarch64_config/.config' -print -quit)"
+
+          test -n "$image"
+          test -n "$image_lz4"
+          test -n "$config"
+          test -s "$image"
+          test -s "$image_lz4"
+          test -s "$config"
+
+          mkdir -p "$GITHUB_WORKSPACE/package"
+          cp "$image" "$GITHUB_WORKSPACE/package/Image"
+          cp "$image_lz4" "$GITHUB_WORKSPACE/package/Image.lz4"
+          cp "$config" "$GITHUB_WORKSPACE/package/kernel.config"
+
+          require_config() {
+            if ! grep -Fxq "$1" "$config"; then
+              echo "Missing or changed required config: $1" >&2
+              exit 1
+            fi
+          }
+
+          # Stock crDroid GKI module, KMI, CFI and toolchain boundary.
+          require_config 'CONFIG_MODULES=y'
+          require_config 'CONFIG_MODULE_UNLOAD=y'
+          require_config 'CONFIG_MODVERSIONS=y'
+          require_config 'CONFIG_MODULE_SIG=y'
+          require_config 'CONFIG_MODULE_SIG_PROTECT=y'
+          require_config 'CONFIG_MODULE_SIG_ALL=y'
+          require_config 'CONFIG_MODULE_SIG_SHA1=y'
+          require_config 'CONFIG_MODULE_SIG_HASH="sha1"'
+          require_config 'CONFIG_TRIM_UNUSED_KSYMS=y'
+          require_config 'CONFIG_UNUSED_KSYMS_WHITELIST="abi_symbollist.raw"'
+          require_config 'CONFIG_CFI_CLANG=y'
+          require_config 'CONFIG_LTO_NONE=y'
+          require_config 'CONFIG_DEBUG_INFO_BTF=y'
+          require_config 'CONFIG_DEBUG_INFO_BTF_MODULES=y'
+          require_config 'CONFIG_LOCALVERSION_AUTO=y'
+
+          # Root and hiding feature set.
+          require_config 'CONFIG_KSU=y'
+          require_config 'CONFIG_KSU_SUSFS=y'
+          require_config 'CONFIG_KSU_SUSFS_SUS_PATH=y'
+          require_config 'CONFIG_KSU_SUSFS_SUS_MOUNT=y'
+          require_config 'CONFIG_KSU_SUSFS_SUS_KSTAT=y'
+          require_config 'CONFIG_KSU_SUSFS_SUS_KSTAT_REDIRECT=y'
+          require_config 'CONFIG_KSU_SUSFS_UNICODE_FILTER=y'
+          require_config 'CONFIG_KSU_SUSFS_HIDDEN_NAME=y'
+          require_config 'CONFIG_KSU_SUSFS_HARDENED=y'
+          require_config 'CONFIG_KSU_SUSFS_SPOOF_UNAME=y'
+          require_config 'CONFIG_KSU_SUSFS_ENABLE_LOG=y'
+          require_config 'CONFIG_KSU_SUSFS_HIDE_KSU_SUSFS_SYMBOLS=y'
+          require_config 'CONFIG_KSU_SUSFS_SPOOF_CMDLINE_OR_BOOTCONFIG=y'
+          require_config 'CONFIG_KSU_SUSFS_OPEN_REDIRECT=y'
+          require_config 'CONFIG_KSU_SUSFS_SUS_MAP=y'
+          require_config 'CONFIG_ZEROMOUNT=y'
+
+          # Networking, IPSet and stable upstream BBR.
+          require_config 'CONFIG_IP_SET=y'
+          require_config 'CONFIG_IP_SET_MAX=65534'
+          require_config 'CONFIG_IP_SET_BITMAP_IP=y'
+          require_config 'CONFIG_IP_SET_BITMAP_IPMAC=y'
+          require_config 'CONFIG_IP_SET_BITMAP_PORT=y'
+          require_config 'CONFIG_IP_SET_HASH_IP=y'
+          require_config 'CONFIG_IP_SET_HASH_IPMARK=y'
+          require_config 'CONFIG_IP_SET_HASH_IPPORT=y'
+          require_config 'CONFIG_IP_SET_HASH_IPPORTIP=y'
+          require_config 'CONFIG_IP_SET_HASH_IPPORTNET=y'
+          require_config 'CONFIG_IP_SET_HASH_IPMAC=y'
+          require_config 'CONFIG_IP_SET_HASH_MAC=y'
+          require_config 'CONFIG_IP_SET_HASH_NETPORTNET=y'
+          require_config 'CONFIG_IP_SET_HASH_NET=y'
+          require_config 'CONFIG_IP_SET_HASH_NETNET=y'
+          require_config 'CONFIG_IP_SET_HASH_NETPORT=y'
+          require_config 'CONFIG_IP_SET_HASH_NETIFACE=y'
+          require_config 'CONFIG_IP_SET_LIST_SET=y'
+          require_config 'CONFIG_NETFILTER_XT_SET=y'
+          require_config 'CONFIG_IP6_NF_NAT=y'
+          require_config 'CONFIG_IP6_NF_TARGET_MASQUERADE=y'
+          require_config 'CONFIG_IP6_NF_TARGET_NPT=y'
+          require_config 'CONFIG_TCP_CONG_ADVANCED=y'
+          require_config 'CONFIG_TCP_CONG_BBR=y'
+          require_config 'CONFIG_TCP_CONG_CUBIC=y'
+          require_config 'CONFIG_TCP_CONG_BIC=y'
+          require_config 'CONFIG_TCP_CONG_WESTWOOD=y'
+          require_config 'CONFIG_TCP_CONG_HTCP=y'
+          require_config 'CONFIG_DEFAULT_BBR=y'
+          require_config 'CONFIG_DEFAULT_TCP_CONG="bbr"'
+          require_config 'CONFIG_NET_SCH_FQ=y'
+          require_config 'CONFIG_NET_SCH_FQ_CODEL=y'
+          require_config 'CONFIG_NET_SCH_CAKE=y'
+          require_config 'CONFIG_NET_ACT_CONNMARK=y'
+
+          if grep -q '^CONFIG_INTEGRATE_MODULES=' "$config"; then
+            echo "Sultan integrated-vendor-module mode leaked into native GKI" >&2
+            exit 1
+          fi
+
+          linux_version="$(strings "$image" | grep -m1 '^Linux version ')"
+          printf '%s\n' "$linux_version" | \
+            tee "$GITHUB_WORKSPACE/package/linux-version.txt"
+          printf '%s\n' "$linux_version" | \
+            grep -Fq '6.1.145-android14-11-gec45f20f38ea-ab15260282'
+
+          lz4_magic="$(od -An -tx1 -N4 "$image_lz4" | tr -d ' \n')"
+          test "$lz4_magic" = '02214c18'
+
+          if strings "$image" | rg -n \
+            'dhdpcie_pm_suspend|mali_csffw-r5[0-9]|baseband[_-]guard|CONFIG_BBG'; then
+            echo "A vendor WLAN/GPU/BBG implementation was embedded in the GKI" >&2
+            exit 1
+          fi
+
+          grep -Fq "KSU_VERSION_FALLBACK := $KSU_VERSION" \
+            aosp/KernelSU-Next/kernel/Kbuild
+          grep -Fq "KSU_VERSION_TAG_FALLBACK := $KSU_TAG" \
+            aosp/KernelSU-Next/kernel/Kbuild
+
+          {
+            echo "Purpose: crDroid 16 komodo native-GKI fastboot boot test"
+            echo "Common tag: $COMMON_TAG"
+            echo "Common commit: $COMMON_COMMIT"
+            echo "Manifest commit: $MANIFEST_COMMIT"
+            echo "Devices commit: $DEVICES_COMMIT"
+            echo "Build repo commit: $BUILD_REPO_COMMIT"
+            echo "Clang: $CLANG_VERSION"
+            echo "KernelSU Next: $KSU_TAG / $KSU_VERSION / $KSU_COMMIT"
+            echo "SUSFS: 2.2.0 + Enhanced SUSFS port"
+            echo "ZeroMount: enabled"
+            echo "Networking: IPSet + BBR + FQ/FQ-CoDel/CAKE"
+            echo "BBG: deliberately disabled for this baseline"
+            echo "Vendor drivers: not embedded; device crDroid vendor modules remain authoritative"
+            echo "Flash status: DO NOT FLASH; package contains kernel payloads only"
+          } > "$GITHUB_WORKSPACE/package/BUILD-INFO.txt"
+
+          cp "$GITHUB_WORKSPACE/clang-version.txt" \
+            "$GITHUB_WORKSPACE/package/clang-version.txt"
+          cp "$GITHUB_WORKSPACE/build.log" \
+            "$GITHUB_WORKSPACE/package/build.log"
+          (
+            cd "$GITHUB_WORKSPACE/package"
+            sha256sum Image Image.lz4 kernel.config \
+              BUILD-INFO.txt linux-version.txt clang-version.txt \
+              > SHA256SUMS
+          )
+
+      - name: Upload native-GKI payload
+        uses: actions/upload-artifact@v4
+        with:
+          name: crdroid-native-gki-ksunext-v330-nobbg-${{ github.run_number }}
+          path: package/
+          if-no-files-found: error
+          compression-level: 9
+
+      - name: Upload build diagnostics on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: crdroid-native-gki-failure-${{ github.run_number }}
+          path: |
+            build.log
+            clang-version.txt
+          if-no-files-found: ignore
+          compression-level: 9
