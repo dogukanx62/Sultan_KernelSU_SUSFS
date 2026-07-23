@@ -239,7 +239,7 @@ jobs:
           image_lz4="$(find -L bazel-bin -type f \
             -path '*/kernel_aarch64/Image.lz4' -print -quit)"
           config="$(find -L bazel-bin -type f \
-            -path '*/kernel_aarch64_config/.config' -print -quit)"
+            -path '*/kernel_aarch64_config/out_dir/.config' -print -quit)"
 
           test -n "$image"
           test -n "$image_lz4"
