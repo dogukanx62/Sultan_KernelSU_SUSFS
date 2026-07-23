@@ -168,13 +168,6 @@ jobs:
 
           ln -s ../KernelSU-Next/kernel aosp/drivers/kernelsu
           test -f aosp/drivers/kernelsu/Kconfig
-          git -C aosp add -N \
-            drivers/kernelsu \
-            fs/susfs.c \
-            fs/zeromount.c \
-            include/linux/susfs.h \
-            include/linux/susfs_def.h \
-            include/linux/zeromount.h
 
           # The patched defconfig intentionally adds features, so the stock
           # savedefconfig textual comparison is replaced by strict checks on
@@ -183,10 +176,6 @@ jobs:
             's/^POST_DEFCONFIG_CMDS="check_defconfig"$/POST_DEFCONFIG_CMDS=""/' \
             aosp/build.config.gki
           grep -Fxq 'POST_DEFCONFIG_CMDS=""' aosp/build.config.gki
-
-          # Preserve the crDroid GKI identity even though the working tree
-          # contains the feature port. BUILD_NUMBER appends the final ab suffix.
-          printf '%s\n' '-android14-11-gec45f20f38ea' > aosp/.scmversion
 
           git -C aosp diff --check
           git -C aosp/KernelSU-Next diff --check
@@ -208,13 +197,28 @@ jobs:
             exit 1
           fi
 
-          if rg -n '^EXPORT_SYMBOL(_GPL)?\\(' \
+          if rg -n '^EXPORT_SYMBOL(_GPL)?\(' \
             aosp/fs/susfs.c \
             aosp/fs/zeromount.c \
             aosp/KernelSU-Next/kernel; then
             echo "The feature port unexpectedly widens the GKI export surface" >&2
             exit 1
           fi
+
+          # Kleaf stamps the source project's Git identity into UTS_RELEASE.
+          # Hide only the already-validated tracked patch delta from Git's
+          # dirty check, while keeping HEAD pinned to the stock crDroid common
+          # commit. New feature files are intentionally untracked and
+          # setlocalversion uses --untracked-files=no.
+          mapfile -d '' -t patched_tracked < <(
+            git -C aosp diff --name-only -z --
+          )
+          if (( ${#patched_tracked[@]} )); then
+            git -C aosp update-index --assume-unchanged -- \
+              "${patched_tracked[@]}"
+          fi
+          test -z "$(git -C aosp status --porcelain --untracked-files=no)"
+          test ! -e aosp/.scmversion
 
       - name: Build only the native GKI kernel and resolved config
         working-directory: work
