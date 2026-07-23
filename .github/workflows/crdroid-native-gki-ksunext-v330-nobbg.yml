@@ -223,10 +223,13 @@ jobs:
           set -o pipefail
 
           tools/bazel build \
+            --config=use_source_tree_aosp \
             --config=fast \
             --config=stamp \
-            //common:kernel_aarch64 \
-            //common:kernel_aarch64_config \
+            --use_prebuilt_gki=false \
+            --use_signed_prebuilts=false \
+            //aosp:kernel_aarch64 \
+            //aosp:kernel_aarch64_config \
             2>&1 | tee "$GITHUB_WORKSPACE/build.log"
 
       - name: Collect and verify the exact driver/KMI boundary
